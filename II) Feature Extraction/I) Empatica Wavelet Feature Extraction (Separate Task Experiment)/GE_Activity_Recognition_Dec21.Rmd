@@ -1,0 +1,214 @@
+---
+title: "Electrical Workers Activity Recognition"
+date:  "`r format(Sys.time(), '%B %d, %Y')`"
+author:
+  - name: "Sahand Hajifar ^[Email: sahandha@buffalo.edu]"
+    affiliation: Department of Industrial and Systems Engineering, University at Buffalo
+    
+bibliography: refs.bib
+link-citations: yes
+header-includes:
+  - \usepackage{booktabs}
+  - \usepackage{chngpage}
+  - \usepackage{caption}
+  - \usepackage{chngpage}
+  - \usepackage{color}
+  - \usepackage[autostyle=true,english=american]{csquotes}
+  - \usepackage{csvsimple}
+  - \usepackage{framed}
+  - \usepackage{graphicx}
+  - \usepackage{hyperref}
+  - \usepackage{lineno}
+  - \usepackage{lscape}
+  - \usepackage{mathptmx}
+  - \usepackage{mathrsfs}
+  - \usepackage{makecell}
+  - \usepackage{mathtools}
+  - \usepackage{media9}
+  - \usepackage{multicol}
+  - \usepackage{multirow}
+  - \usepackage{secdot}
+  - \usepackage{sectsty}
+  - \usepackage{setspace}
+  - \usepackage{subcaption}
+  - \usepackage{tabulary}
+  - \usepackage{titlesec}
+  - \usepackage[colorinlistoftodos]{todonotes}
+  - \usepackage{url}
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    df_print: paged
+    code_folding: show
+    paged_df: TRUE
+    code_download: TRUE
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      cache = TRUE,
+                      out.width = "100%",
+                      warning = FALSE,
+                      message = FALSE) 
+```
+
+---
+
+\newpage 
+# Initialization
+
+## R Initilization/Package Management 
+The code snippet below presents the **R** packages used in our analysis. Additionally, the reader should note that we have used R version 3.6.3 in our analysis. The analysis is performed on an HP laptop equipped with a 2.10 GHz processor and 16.0 GB of RAM running a 64-bit version of Windows 10..
+```{r error=FALSE, warning=FALSE, cache=FALSE, load_libraries, message=FALSE}
+rm(list = ls()) # clear global environment
+graphics.off() # close all graphics
+#p_load is equivalent to combining both install.packages() and library()
+pacman::p_load(tidyverse, magrittr, doParallel,
+               caret, caretEnsemble, AUC, caTools, DMwR, MLmetrics,
+               rpart, nnet, #rpart and multinom packages
+               randomForest, e1071, foreach, import, #parRF packages
+               kernlab, # svmRadial package
+               conflicted,ggfortify, readxl, DMwR, ROSE, pander,
+               wavelets, entropy) # Loading required packages and data
+
+conflict_prefer("select", "dplyr") #Prefering dplyr::select over any other package
+conflict_prefer("summarize", "dplyr") # similar to above but with dplyr::summarize
+
+source("./00_customFunctions.R") # custom functions
+set.seed(2020)
+numCores = detectCores() -1 # to allow the use of other programs on machine
+startTime = Sys.time()
+```
+
+## Data Extraction
+In this section, acceleration data and annotation data are extracted from two separate folders ('Acc. Data' and 'Annotation Data').
+
+```{r settings}
+# subject_numbers = c(23,28,29,32,34,35,36,37,39,41)
+subject_numbers = c(8,9,14,20,21,25,28,29,30,38)
+# subject_numbers = 8:44
+sub_range = 1:length(subject_numbers)
+freq = 32 #Data collection frequency
+```
+
+
+```{r extract}
+  Subject_Data <- sprintf("./Acc. Data/ACC%s.csv",subject_numbers) %>%
+  lapply(read.csv) %>%
+  lapply(function(x){x = x[-1,]; return(x)}) #remove first element which represents frequency
+
+  #This extracts the start time of each subject based on unix time
+  start_time = lapply(Subject_Data, function(x){temp = colnames(x)[1];return(temp)}) %>%
+    lapply(function(x){temp = as.numeric(sub('.', '', x));return(temp)}) %>%
+    unlist
+  
+  Subject_Data = lapply(Subject_Data, function(x) {colnames(x) = c('ax','ay','az'); x})
+  
+# Filtering
+# n = 4
+ fc = 10
+ Fs = 32
+# Wn = (2/Fs)*fc
+# but_filt <- signal::butter(n=n, W=Wn, type="low")
+# 
+# Subject_Data = lapply(Subject_Data, function(x){
+#   temp = apply(x, 2, signal::filter,filt = but_filt) ; temp})
+  
+subject_annotation = read_excel_allsheets("./Annotation Data/separate.xlsx")
+  
+  to_be_removed = !apply(matrix(names(subject_annotation)), 1, function(x){ ### removes the subjects that are not in 'subject_numbers'
+     temp = x %in% (sprintf("P%s",subject_numbers)); temp
+  })
+  
+subject_annotation[to_be_removed] = NULL
+  
+indices_list = vector(mode = "list", length = length(subject_annotation))
+for (i in 1:length(indices_list)){
+  indices_list[[i]] = freq * apply(matrix(subject_annotation[[i]][,2]), 1, time_diff, start_time = start_time[i])
+  }
+  
+Names = apply(matrix(subject_annotation[[1]][,1]), 1, function(x){name = sub("_.*", "",x);return(name)})
+```
+
+## Information for Reproducing our Research
+
+```{r reproduce}
+    sInfo = sessionInfo()
+    sInfo
+```
+
+# Visualization {.tabset .tabset-fade .tabset-pills}
+In this section, acceleration plots are generated for different subjects. Red vertical lines represent the times that tasks start or end.
+
+```{r acc_plot,echo=TRUE, results='asis'}
+for (i in sub_range)
+{
+  Raw_Data<-ts(data = Subject_Data[[i]], start = 1, end = dim(Subject_Data[[i]])[1], frequency = 1, names =c("ax","ay","az") )
+  cat(paste0("## Subject ",subject_numbers[i], " {-} \n"))
+  
+  Plot = ggplot2::autoplot(Raw_Data)+theme_bw()+ ggtitle(paste0("Subject ",toString(subject_numbers[i])))+ theme(plot.title = element_text(hjust = 0.5))
+  
+  Plot = Plot + geom_vline(xintercept = indices_list[[i]], colour="red")
+  
+  
+  #for (j in 1:(length(indices_list))){
+  # Plot = Plot + geom_vline(aes_(xintercept= indices_list[[i]][j],
+  #               color=Names[j]))
+  #}
+  
+  print(Plot)
+  cat("\n \n")
+}
+
+```
+
+# Feature Extraction
+In this section, discrete wavelet transform (DWT) is applied to the acceleration data (aX, aY and aZ) in 4-second and 10-second time windows (numVars is the number of obs. per window). To get a better understanding of how the features are engineered, we refer the reader to our paper.
+
+```{r feature_extract}
+Names = Names[seq(2,length(Names),2)]
+Names[Names == "ladder1" | Names == "ladder2"] = "ladder"
+feature_list = vector(mode = "list", length = length(subject_annotation))
+
+for (num_sub in 1:length(Subject_Data)){
+  
+  indices_list2 = vector(mode = "list", length = length(Names))
+for (i in 1:length(indices_list2))
+{
+  tryCatch({
+  indices_list2[[i]] = indices_list[[num_sub]][2*i-1]:indices_list[[num_sub]][2*i]
+  }, error = function(e) {})
+}
+  
+df = data.frame(acc= Subject_Data[[num_sub]]*9.81/64, label = NA)
+for (i in 1:length(indices_list2)) { 
+  rows = indices_list2[[i]]
+  df[rows, 'label'] = Names[i]
+}
+
+df %<>% na.omit() # removing unlabeled acc observations
+df$label %<>% as.factor() # converting the label to a factor
+
+numVars = 128 # we can change that (number of datapoints per window)
+numLevel = 5 # Number of levels from wavelet to extract
+
+feature_X = featureX(df)
+feature_Y = featureY(df)
+feature_Z = featureZ(df)
+
+feature = cbind(feature_X[,1:(dim(feature_X)[2]-1)],
+                feature_Y[,2:(dim(feature_Y)[2]-1)],
+                feature_Z[,2:(dim(feature_Z)[2])])
+
+colnames(feature) = c('label', paste0("f", seq(1, 3*((numLevel+1)*12))), 'id')
+feature_list[[num_sub]] = feature
+  
+}
+save(feature_list, file = "feature_list.Rdata")
+```
+---
+
+# References {-}
